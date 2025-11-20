@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("--depth", type=int, default=6, help="Transformer depth")
     parser.add_argument("--num_heads", type=int, default=8, help="Number of attention heads")
     parser.add_argument("--patience", type=int, default=5, help="Early stopping patience")
+    parser.add_argument("--max_samples", type=int, default=None, help="Max samples per dataset")
     return parser.parse_args()
 
 def train():
