@@ -195,7 +195,12 @@ def train():
     model.eval()
     
     # 1. Reconstructions
+    # 1. Reconstructions
     with torch.no_grad():
+        sdss_plotted = 0
+        desi_plotted = 0
+        total_plotted = 0
+        
         for batch in test_loader:
             flux = batch['flux'].to(device)
             wavelength = batch['wavelength'].to(device)
@@ -207,12 +212,22 @@ def train():
             reconstruction = model(flux, wavelength)
             
             for idx, obj_id in enumerate(obj_ids):
-                if idx < 4:
+                ds_name = dataset_names[idx]
+                
+                # Logic to ensure we get both if possible
+                should_plot = False
+                if "sdss" in ds_name.lower() and sdss_plotted < 2:
+                    should_plot = True
+                    sdss_plotted += 1
+                elif "desi" in ds_name.lower() and desi_plotted < 2:
+                    should_plot = True
+                    desi_plotted += 1
+                
+                if should_plot:
                     f = flux[idx].cpu().numpy()
                     w = wavelength[idx].cpu().numpy()
                     r = reconstruction[idx].cpu().numpy()
                     v = valid_mask[idx].cpu().numpy().astype(bool)
-                    ds_name = dataset_names[idx]
                     
                     plt.figure(figsize=(10, 5))
                     plt.plot(w[v], f[v], label="Original", alpha=0.7)
@@ -221,18 +236,21 @@ def train():
                     plt.title(f"Reconstruction {obj_id} ({ds_name})")
                     plt.xlabel("Wavelength")
                     plt.ylabel("Normalized Flux")
-                    plt.savefig(os.path.join(args.save_dir, f"reconstruction_{run_id}_test_{idx}_{ds_name}.png"))
+                    plt.savefig(os.path.join(args.save_dir, f"reconstruction_{run_id}_test_{total_plotted}_{ds_name}.png"))
                     plt.close()
-            break 
+                    total_plotted += 1
+                
+                if total_plotted >= 4:
+                    break
+            
+            if total_plotted >= 4:
+                break 
 
     # 2. UMAP
     print("Extracting embeddings for UMAP...")
     embeddings = []
     redshifts = []
     ds_names_list = []
-    
-    count = 0
-    max_samples = 1000
     
     with torch.no_grad():
         for batch in test_loader:
@@ -247,14 +265,10 @@ def train():
             embeddings.append(emb_mean.cpu().numpy())
             redshifts.append(z.numpy())
             ds_names_list.extend(ds_names)
-            
-            count += flux.shape[0]
-            if count >= max_samples:
-                break
                 
-    embeddings = np.concatenate(embeddings, axis=0)[:max_samples]
-    redshifts = np.concatenate(redshifts, axis=0)[:max_samples]
-    ds_names_list = np.array(ds_names_list)[:max_samples]
+    embeddings = np.concatenate(embeddings, axis=0)
+    redshifts = np.concatenate(redshifts, axis=0)
+    ds_names_list = np.array(ds_names_list)
     
     print(f"Running dimensionality reduction on {embeddings.shape}...")
     
