@@ -1,0 +1,36 @@
+#!/bin/bash
+#SBATCH --job-name=spec_tok_train
+#SBATCH --output=/n03data/huertas/spec_tok/logs/train_%j.out
+#SBATCH --error=/n03data/huertas/spec_tok/logs/train_%j.err
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --nodelist=n03
+#SBATCH --cpus-per-task=4
+#SBATCH --time=24:00:00
+#SBATCH --gres=gpu:1
+
+source /n03data/huertas/python/miniconda3/etc/profile.d/conda.sh
+conda activate /n03data/huertas/python/miniconda3/envs/cosmos_visual/
+
+# Set Hugging Face Cache Directory
+export HF_HOME=/n03data/huertas/mmu
+export HF_DATASETS_CACHE=/n03data/huertas/mmu
+
+# Create directories
+mkdir -p /n03data/huertas/spec_tok/logs
+mkdir -p /n03data/huertas/spec_tok/checkpoints
+
+# Install dependencies if needed (user can comment out if already installed)
+pip install umap-learn datasets torch torchvision torchaudio matplotlib scikit-learn pypdf
+
+# Run Training
+# Using larger batch size and more epochs for cluster run
+python train.py \
+    --cache_dir /n03data/huertas/mmu \
+    --save_dir /n03data/huertas/spec_tok/checkpoints \
+    --batch_size 64 \
+    --epochs 50 \
+    --embed_dim 512 \
+    --depth 6 \
+    --num_heads 8 \
+    --max_samples 1000
