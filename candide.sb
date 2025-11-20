@@ -21,7 +21,7 @@ mkdir -p /n03data/huertas/spec_tok/logs
 mkdir -p /n03data/huertas/spec_tok/checkpoints
 
 # Install dependencies if needed (user can comment out if already installed)
-pip install umap-learn datasets torch torchvision torchaudio matplotlib scikit-learn pypdf
+#pip install umap-learn datasets torch torchvision torchaudio matplotlib scikit-learn pypdf
 
 cd /n03data/huertas/python/spec_tok
 

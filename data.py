@@ -112,5 +112,6 @@ def collate_fn(batch):
         "mask": torch.stack(mask_batch),
         "valid_mask": torch.stack(valid_mask_batch),
         "z": torch.stack(z_batch),
-        "object_id": id_batch
+        "object_id": id_batch,
+        "dataset_name": [b['dataset_name'] for b in batch]
     }

@@ -10,6 +10,7 @@ import os
 import argparse
 import numpy as np
 from sklearn.decomposition import PCA
+from datetime import datetime
 
 # Try importing umap, if not available, fallback to PCA
 try:
@@ -29,11 +30,14 @@ def parse_args():
     parser.add_argument("--embed_dim", type=int, default=512, help="Embedding dimension")
     parser.add_argument("--depth", type=int, default=6, help="Transformer depth")
     parser.add_argument("--num_heads", type=int, default=8, help="Number of attention heads")
-    parser.add_argument("--max_samples", type=int, default=None, help="Max samples per dataset")
+    parser.add_argument("--patience", type=int, default=5, help="Early stopping patience")
     return parser.parse_args()
 
 def train():
     args = parse_args()
+    
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    print(f"Run ID: {run_id}")
     
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
@@ -47,8 +51,20 @@ def train():
     print("Loading DESI...")
     desi_ds = SpectrumDataset("MultimodalUniverse/desi", cache_dir=args.cache_dir, max_length=args.max_samples)
     
-    train_ds = ConcatDataset([sdss_ds, desi_ds])
+    full_ds = ConcatDataset([sdss_ds, desi_ds])
+    
+    # Split Train/Val/Test (80/10/10)
+    total_size = len(full_ds)
+    train_size = int(0.8 * total_size)
+    val_size = int(0.1 * total_size)
+    test_size = total_size - train_size - val_size
+    
+    train_ds, val_ds, test_ds = torch.utils.data.random_split(full_ds, [train_size, val_size, test_size])
+    print(f"Dataset split: Train={len(train_ds)}, Val={len(val_ds)}, Test={len(test_ds)}")
+    
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
     
     # Model
     model = SpectrumTokenizer(
@@ -61,11 +77,18 @@ def train():
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     
     print("Starting training...")
-    model.train()
+    
+    train_losses = []
+    val_losses = []
+    best_val_loss = float('inf')
+    patience_counter = 0
+    best_model_path = ""
     
     for epoch in range(args.epochs):
-        total_loss = 0
-        num_batches = 0
+        # Training
+        model.train()
+        total_train_loss = 0
+        num_train_batches = 0
         
         for i, batch in enumerate(train_loader):
             flux = batch['flux'].to(device)
@@ -75,132 +98,153 @@ def train():
             
             optimizer.zero_grad()
             
-            # Forward
             reconstruction = model(flux, wavelength)
-            
-            # Loss: Weighted MSE (Gaussian Likelihood)
-            # L = sum(ivar * (y - y_hat)^2) / sum(ivar)
-            # Only on valid pixels
             
             diff = (flux - reconstruction) ** 2
             weighted_diff = diff * ivar
-            
-            # Mask out invalid pixels (ivar should be 0 there anyway, but valid_mask ensures it)
             loss = (weighted_diff * valid_mask).sum() / (ivar.sum() + 1e-8)
             
             loss.backward()
             optimizer.step()
             
-            total_loss += loss.item()
-            num_batches += 1
+            total_train_loss += loss.item()
+            num_train_batches += 1
             
-            if i % 10 == 0:
-                print(f"Epoch {epoch}, Batch {i}, Loss: {loss.item():.6f}")
-                
-        avg_loss = total_loss / num_batches
-        print(f"Epoch {epoch} Average Loss: {avg_loss:.6f}")
+        avg_train_loss = total_train_loss / num_train_batches
+        train_losses.append(avg_train_loss)
         
-        # Save checkpoint
-        ckpt_path = os.path.join(args.save_dir, f"model_epoch_{epoch}.pt")
+        # Validation
+        model.eval()
+        total_val_loss = 0
+        num_val_batches = 0
+        
+        with torch.no_grad():
+            for batch in val_loader:
+                flux = batch['flux'].to(device)
+                wavelength = batch['wavelength'].to(device)
+                ivar = batch['ivar'].to(device)
+                valid_mask = batch['valid_mask'].to(device)
+                
+                reconstruction = model(flux, wavelength)
+                
+                diff = (flux - reconstruction) ** 2
+                weighted_diff = diff * ivar
+                loss = (weighted_diff * valid_mask).sum() / (ivar.sum() + 1e-8)
+                
+                total_val_loss += loss.item()
+                num_val_batches += 1
+        
+        avg_val_loss = total_val_loss / num_val_batches
+        val_losses.append(avg_val_loss)
+        
+        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.6f}, Val Loss={avg_val_loss:.6f}")
+        
+        # Early Stopping & Checkpointing
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            patience_counter = 0
+            best_model_path = os.path.join(args.save_dir, f"best_model_{run_id}.pt")
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': best_val_loss,
+            }, best_model_path)
+            print(f"Saved best model to {best_model_path}")
+        else:
+            patience_counter += 1
+            print(f"Validation loss did not improve. Patience: {patience_counter}/{args.patience}")
+            
+        if patience_counter >= args.patience:
+            print("Early stopping triggered.")
+            break
+            
+        # Save regular checkpoint
+        ckpt_path = os.path.join(args.save_dir, f"model_{run_id}_epoch_{epoch}.pt")
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'loss': avg_loss,
         }, ckpt_path)
-        print(f"Saved checkpoint to {ckpt_path}")
 
-    # Evaluation and Plotting
-    print("Generating diagnostic plots...")
+    # Plot Loss
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_losses, label="Train Loss")
+    plt.plot(val_losses, label="Val Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.title("Training and Validation Loss")
+    plt.savefig(os.path.join(args.save_dir, f"loss_curve_{run_id}.png"))
+    plt.close()
+    print(f"Saved loss_curve_{run_id}.png")
+
+    # Evaluation and Plotting on Test Set
+    print("Generating diagnostic plots on Test Set...")
+    # Load best model
+    if os.path.exists(best_model_path):
+        checkpoint = torch.load(best_model_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Loaded best model from {best_model_path}")
+    else:
+        print("Best model not found, using current model.")
+        
     model.eval()
     
     # 1. Reconstructions
-    # We want to plot a few examples from SDSS and DESI
-    # We can iterate through the dataset to find them
-    
-    sdss_example = None
-    desi_example = None
-    
-    # Just grab a batch and check IDs
     with torch.no_grad():
-        for batch in train_loader:
+        for batch in test_loader:
             flux = batch['flux'].to(device)
             wavelength = batch['wavelength'].to(device)
             ivar = batch['ivar'].to(device)
             valid_mask = batch['valid_mask'].to(device)
             obj_ids = batch['object_id']
+            dataset_names = batch['dataset_name']
             
             reconstruction = model(flux, wavelength)
             
             for idx, obj_id in enumerate(obj_ids):
-                # Heuristic to identify SDSS vs DESI if not explicit
-                # But we can also just check which dataset they came from if we tracked it.
-                # In data.py I added 'dataset_name' to __getitem__ but collate_fn didn't stack it (it's string).
-                # But I didn't add it to collate_fn return.
-                # Let's just rely on the fact that we loaded them.
-                # Or check the ID format if possible.
-                # Actually, let's just plot the first few and label them by ID.
-                
-                # Better: Let's try to find one of each.
-                # SDSS IDs are usually long integers. DESI IDs are also long integers.
-                # Let's just plot 4 random ones.
-                
                 if idx < 4:
                     f = flux[idx].cpu().numpy()
                     w = wavelength[idx].cpu().numpy()
                     r = reconstruction[idx].cpu().numpy()
                     v = valid_mask[idx].cpu().numpy().astype(bool)
+                    ds_name = dataset_names[idx]
                     
                     plt.figure(figsize=(10, 5))
                     plt.plot(w[v], f[v], label="Original", alpha=0.7)
                     plt.plot(w[v], r[v], label="Reconstruction", alpha=0.7)
                     plt.legend()
-                    plt.title(f"Reconstruction {obj_id}")
+                    plt.title(f"Reconstruction {obj_id} ({ds_name})")
                     plt.xlabel("Wavelength")
                     plt.ylabel("Normalized Flux")
-                    plt.savefig(os.path.join(args.save_dir, f"reconstruction_{epoch}_{idx}.png"))
+                    plt.savefig(os.path.join(args.save_dir, f"reconstruction_{run_id}_test_{idx}_{ds_name}.png"))
                     plt.close()
-            
-            break # Just one batch for reconstruction plots
+            break 
 
     # 2. UMAP
-    # We need to extract embeddings for a subset of data
     print("Extracting embeddings for UMAP...")
     embeddings = []
     redshifts = []
+    ds_names_list = []
     
-    # Use a subset (e.g. 1000 samples)
     count = 0
     max_samples = 1000
     
     with torch.no_grad():
-        for batch in train_loader:
+        for batch in test_loader:
             flux = batch['flux'].to(device)
             wavelength = batch['wavelength'].to(device)
             z = batch['z']
-            
-            # We need to get the embedding from the model.
-            # model.forward returns reconstruction.
-            # We need to modify model to return embeddings or add a method.
-            # Let's add a method `encode` to SpectrumTokenizer in model.py?
-            # Or just access `model.encoder` here if we replicate the forward pass logic.
-            # Replicating logic is safer than modifying model.py if we don't want to break things,
-            # but modifying model.py is cleaner.
-            # Let's modify model.py to return embeddings if requested, or add encode method.
-            # For now, I'll do it here by copy-pasting logic (hacky but fast) or just modify model.py.
-            # I will modify model.py in the next step.
-            # Assuming model.encode(flux, wavelength) exists.
-            
-            # Wait, I can't modify model.py in this `write_to_file` call.
-            # I will assume `model.encode` exists and implement it in the next step.
+            ds_names = batch['dataset_name']
             
             emb = model.encode(flux, wavelength) # [B, N, D]
-            
-            # Mean pool
             emb_mean = emb.mean(dim=1) # [B, D]
             
             embeddings.append(emb_mean.cpu().numpy())
             redshifts.append(z.numpy())
+            ds_names_list.extend(ds_names)
             
             count += flux.shape[0]
             if count >= max_samples:
@@ -208,6 +252,7 @@ def train():
                 
     embeddings = np.concatenate(embeddings, axis=0)[:max_samples]
     redshifts = np.concatenate(redshifts, axis=0)[:max_samples]
+    ds_names_list = np.array(ds_names_list)[:max_samples]
     
     print(f"Running dimensionality reduction on {embeddings.shape}...")
     
@@ -220,15 +265,28 @@ def train():
         proj = reducer.fit_transform(embeddings)
         title = "PCA"
         
-    plt.figure(figsize=(8, 6))
-    sc = plt.scatter(proj[:, 0], proj[:, 1], c=redshifts, cmap='viridis', s=5, alpha=0.7)
-    plt.colorbar(sc, label='Redshift')
-    plt.title(f"{title} of Spectral Embeddings")
+    plt.figure(figsize=(10, 8))
+    
+    # Plot SDSS
+    mask_sdss = np.char.find(np.char.lower(ds_names_list.astype(str)), "sdss") != -1
+    if mask_sdss.any():
+        sc1 = plt.scatter(proj[mask_sdss, 0], proj[mask_sdss, 1], c=redshifts[mask_sdss], 
+                          cmap='viridis', s=20, alpha=0.7, marker='o', label='SDSS', vmin=redshifts.min(), vmax=redshifts.max())
+    
+    # Plot DESI
+    mask_desi = np.char.find(np.char.lower(ds_names_list.astype(str)), "desi") != -1
+    if mask_desi.any():
+        sc2 = plt.scatter(proj[mask_desi, 0], proj[mask_desi, 1], c=redshifts[mask_desi], 
+                          cmap='viridis', s=20, alpha=0.7, marker='^', label='DESI', vmin=redshifts.min(), vmax=redshifts.max())
+    
+    plt.colorbar(sc1 if mask_sdss.any() else sc2, label='Redshift')
+    plt.legend()
+    plt.title(f"{title} of Spectral Embeddings (Test Set)")
     plt.xlabel("Dim 1")
     plt.ylabel("Dim 2")
-    plt.savefig(os.path.join(args.save_dir, "embedding_projection.png"))
+    plt.savefig(os.path.join(args.save_dir, f"embedding_projection_{run_id}.png"))
     plt.close()
-    print("Saved embedding_projection.png")
+    print(f"Saved embedding_projection_{run_id}.png")
 
 if __name__ == "__main__":
     train()
