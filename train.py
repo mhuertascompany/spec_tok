@@ -166,7 +166,8 @@ def train():
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'loss': avg_loss,
+            'loss': avg_train_loss,
+            'val_loss': avg_val_loss,
         }, ckpt_path)
 
     # Plot Loss
