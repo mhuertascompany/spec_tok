@@ -172,7 +172,7 @@ def evaluate():
     print(f"Running dimensionality reduction on {embeddings.shape}...")
     
     if HAS_UMAP:
-        reducer = umap.UMAP()
+        reducer = umap.UMAP(n_neighbors=30, min_dist=0.5)
         proj = reducer.fit_transform(embeddings)
         title = "UMAP"
     else:
@@ -186,13 +186,13 @@ def evaluate():
     mask_sdss = np.char.find(np.char.lower(ds_names_list.astype(str)), "sdss") != -1
     if mask_sdss.any():
         sc1 = plt.scatter(proj[mask_sdss, 0], proj[mask_sdss, 1], c=redshifts[mask_sdss], 
-                          cmap='viridis', s=20, alpha=0.7, marker='o', label='SDSS', vmin=redshifts.min(), vmax=redshifts.max())
+                          cmap='viridis', s=5, alpha=0.6, marker='o', label='SDSS', vmin=redshifts.min(), vmax=redshifts.max())
     
     # Plot DESI
     mask_desi = np.char.find(np.char.lower(ds_names_list.astype(str)), "desi") != -1
     if mask_desi.any():
         sc2 = plt.scatter(proj[mask_desi, 0], proj[mask_desi, 1], c=redshifts[mask_desi], 
-                          cmap='viridis', s=20, alpha=0.7, marker='^', label='DESI', vmin=redshifts.min(), vmax=redshifts.max())
+                          cmap='viridis', s=5, alpha=0.6, marker='^', label='DESI', vmin=redshifts.min(), vmax=redshifts.max())
     
     plt.colorbar(sc1 if mask_sdss.any() else sc2, label='Redshift')
     plt.legend()
