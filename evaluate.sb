@@ -3,9 +3,8 @@
 #SBATCH --output=/n03data/huertas/spec_tok/logs/eval_%j.out
 #SBATCH --error=/n03data/huertas/spec_tok/logs/eval_%j.err
 #SBATCH --nodes=1
-#SBATCH --partition=pscompl
 #SBATCH --ntasks-per-node=1
-#SBATCH --nodelist=n36
+#SBATCH --nodelist=n03
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
@@ -38,3 +37,5 @@ python evaluate.py \
     --num_heads 8 \
     --max_samples 100000 \
     --seed 42
+
+# #SBATCH --partition=pscompl
