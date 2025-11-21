@@ -180,25 +180,42 @@ def evaluate():
         proj = reducer.fit_transform(embeddings)
         title = "PCA"
         
-    plt.figure(figsize=(10, 8))
+    fig, axes = plt.subplots(1, 2, figsize=(20, 8), sharex=True, sharey=True)
     
-    # Plot SDSS
+    # Determine global min/max for redshift colorbar
+    z_min, z_max = redshifts.min(), redshifts.max()
+    
+    # Plot SDSS (Left Panel)
     mask_sdss = np.char.find(np.char.lower(ds_names_list.astype(str)), "sdss") != -1
+    sc = None
     if mask_sdss.any():
-        sc1 = plt.scatter(proj[mask_sdss, 0], proj[mask_sdss, 1], c=redshifts[mask_sdss], 
-                          cmap='viridis', s=5, alpha=0.6, marker='o', label='SDSS', vmin=redshifts.min(), vmax=redshifts.max())
-    
-    # Plot DESI
+        sc = axes[0].scatter(proj[mask_sdss, 0], proj[mask_sdss, 1], c=redshifts[mask_sdss], 
+                              cmap='viridis', s=5, alpha=0.6, marker='o', vmin=z_min, vmax=z_max)
+        axes[0].set_title("SDSS")
+    else:
+        axes[0].text(0.5, 0.5, "No SDSS data", ha='center', va='center')
+        axes[0].set_title("SDSS (Empty)")
+        
+    axes[0].set_xlabel("Dim 1")
+    axes[0].set_ylabel("Dim 2")
+
+    # Plot DESI (Right Panel)
     mask_desi = np.char.find(np.char.lower(ds_names_list.astype(str)), "desi") != -1
     if mask_desi.any():
-        sc2 = plt.scatter(proj[mask_desi, 0], proj[mask_desi, 1], c=redshifts[mask_desi], 
-                          cmap='viridis', s=5, alpha=0.6, marker='^', label='DESI', vmin=redshifts.min(), vmax=redshifts.max())
+        sc = axes[1].scatter(proj[mask_desi, 0], proj[mask_desi, 1], c=redshifts[mask_desi], 
+                              cmap='viridis', s=5, alpha=0.6, marker='^', vmin=z_min, vmax=z_max)
+        axes[1].set_title("DESI")
+    else:
+        axes[1].text(0.5, 0.5, "No DESI data", ha='center', va='center')
+        axes[1].set_title("DESI (Empty)")
+        
+    axes[1].set_xlabel("Dim 1")
     
-    plt.colorbar(sc1 if mask_sdss.any() else sc2, label='Redshift')
-    plt.legend()
-    plt.title(f"{title} of Spectral Embeddings (Test Set)")
-    plt.xlabel("Dim 1")
-    plt.ylabel("Dim 2")
+    # Add colorbar
+    if sc:
+        cbar = fig.colorbar(sc, ax=axes.ravel().tolist(), label='Redshift')
+    
+    plt.suptitle(f"{title} of Spectral Embeddings (Test Set)")
     plt.savefig(os.path.join(args.save_dir, f"eval_embedding_projection_{run_id}.png"))
     plt.close()
     print(f"Saved eval_embedding_projection_{run_id}.png")
