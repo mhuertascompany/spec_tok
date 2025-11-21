@@ -25,7 +25,7 @@ cd /n03data/huertas/python/spec_tok
 
 # Run Evaluation
 # REPLACE CHECKPOINT PATH BELOW
-CHECKPOINT_PATH="/n03data/huertas/spec_tok/checkpoints/model_20251121_094655_epoch_1.pt"
+CHECKPOINT_PATH="/n03data/huertas/spec_tok/checkpoints/best_model_20251121_094655.pt"
 
 python evaluate.py \
     --checkpoint $CHECKPOINT_PATH \
