@@ -15,6 +15,9 @@ class SpectrumDataset(Dataset):
         self.ds = load_dataset(dataset_name, split=split, streaming=False, cache_dir=cache_dir)
         print(f"Loaded {len(self.ds)} examples.")
 
+        # Store dataset_name for use in __getitem__
+        self.dataset_name_str = "SDSS" if "sdss" in dataset_name.lower() else "DESI"
+
     def __len__(self):
         return len(self.ds)
 
@@ -52,7 +55,7 @@ class SpectrumDataset(Dataset):
             "valid_mask": torch.tensor(valid_mask),
             "z": torch.tensor(z, dtype=torch.float32),
             "object_id": obj_id,
-            "dataset_name": "SDSS" if "sdss" in str(item.get('object_id', '')).lower() else "DESI" # Heuristic or pass in
+            "dataset_name": self.dataset_name_str
         }
 
 def collate_fn(batch):
