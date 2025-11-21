@@ -6,31 +6,20 @@ import numpy as np
 
 class SpectrumDataset(Dataset):
     def __init__(self, dataset_name, split="train", max_length=None, cache_dir=None):
-        self.ds = load_dataset(dataset_name, split=split, streaming=True, cache_dir=cache_dir)
-        self.data = []
-        limit = max_length if max_length is not None else 100000 # Default to 100k if not specified, or maybe just all?
-        # If max_length is None, maybe we should try to load all? But it's streaming.
-        # User said "larger sample". 100k is reasonable for "larger".
-        # Let's set default to None and if None, load all (or a very large number).
-        # But wait, loading ALL into memory list might crash if it's huge.
-        # The datasets are likely large.
-        # However, for "testing" on cluster, maybe 100k is fine.
-        # Let's use a large limit.
-        
-        print(f"Loading examples from {dataset_name}...")
-        for i, item in enumerate(self.ds):
-            if max_length is not None and i >= max_length:
-                break
-            self.data.append(item)
-            if i % 10000 == 0:
-                print(f"Loaded {i} examples...")
-        print(f"Loaded {len(self.data)} examples.")
+        if max_length is not None:
+            # Use slicing syntax for non-streaming dataset
+            split = f"{split}[:{max_length}]"
+            
+        print(f"Loading {dataset_name} with split={split} (streaming=False)...")
+        # Use streaming=False to leverage Arrow memory mapping and avoid RAM issues
+        self.ds = load_dataset(dataset_name, split=split, streaming=False, cache_dir=cache_dir)
+        print(f"Loaded {len(self.ds)} examples.")
 
     def __len__(self):
-        return len(self.data)
+        return len(self.ds)
 
     def __getitem__(self, idx):
-        item = self.data[idx]
+        item = self.ds[idx]
         spec = item['spectrum']
         
         flux = np.array(spec['flux'], dtype=np.float32)
