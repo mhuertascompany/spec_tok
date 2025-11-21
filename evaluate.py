@@ -1,7 +1,5 @@
-
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from torch.utils.data import DataLoader, ConcatDataset
 from model import SpectrumTokenizer
 from data import SpectrumDataset, collate_fn
@@ -22,18 +20,15 @@ except ImportError:
     print("UMAP not found, falling back to PCA for visualization.")
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train Universal Spectrum Tokenizer")
+    parser = argparse.ArgumentParser(description="Evaluate Universal Spectrum Tokenizer")
+    parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint to evaluate")
     parser.add_argument("--cache_dir", type=str, default=None, help="Hugging Face dataset cache directory")
-    parser.add_argument("--save_dir", type=str, default="./checkpoints", help="Directory to save checkpoints and plots")
+    parser.add_argument("--save_dir", type=str, default="./evaluation_results", help="Directory to save plots")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--embed_dim", type=int, default=512, help="Embedding dimension")
     parser.add_argument("--depth", type=int, default=6, help="Transformer depth")
     parser.add_argument("--num_heads", type=int, default=8, help="Number of attention heads")
-    parser.add_argument("--patience", type=int, default=5, help="Early stopping patience")
     parser.add_argument("--max_samples", type=int, default=None, help="Max samples per dataset")
-    parser.add_argument("--resume_from", type=str, default=None, help="Path to checkpoint to resume from")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     return parser.parse_args()
 
@@ -44,12 +39,12 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def train():
+def evaluate():
     args = parse_args()
     set_seed(args.seed)
     
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    print(f"Run ID: {run_id}")
+    print(f"Evaluation Run ID: {run_id}")
     
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
@@ -57,7 +52,7 @@ def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Load Datasets
+    # Load Datasets (Must match training logic for consistent splits)
     print("Loading SDSS...")
     sdss_ds = SpectrumDataset("MultimodalUniverse/sdss", cache_dir=args.cache_dir, max_length=args.max_samples)
     print("Loading DESI...")
@@ -73,11 +68,9 @@ def train():
     
     # Use generator for reproducible split
     generator = torch.Generator().manual_seed(args.seed)
-    train_ds, val_ds, test_ds = torch.utils.data.random_split(full_ds, [train_size, val_size, test_size], generator=generator)
-    print(f"Dataset split: Train={len(train_ds)}, Val={len(val_ds)}, Test={len(test_ds)}")
+    _, _, test_ds = torch.utils.data.random_split(full_ds, [train_size, val_size, test_size], generator=generator)
+    print(f"Dataset split: Test={len(test_ds)}")
     
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
     
     # Model
@@ -88,142 +81,20 @@ def train():
         num_heads=args.num_heads
     ).to(device)
     
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
-    
-    start_epoch = 0
-    train_losses = []
-    val_losses = []
-    best_val_loss = float('inf')
-    
-    if args.resume_from:
-        if os.path.isfile(args.resume_from):
-            print(f"Resuming from checkpoint: {args.resume_from}")
-            checkpoint = torch.load(args.resume_from, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            start_epoch = checkpoint['epoch'] + 1
-            if 'loss' in checkpoint: # Assuming 'loss' in checkpoint refers to best_val_loss
-                best_val_loss = checkpoint['loss']
-            print(f"Resuming from epoch {start_epoch}")
-        else:
-            print(f"Checkpoint not found at {args.resume_from}, starting from scratch.")
-    
-    print("Starting training...")
-    
-    patience_counter = 0
-    best_model_path = ""
-    
-    for epoch in range(start_epoch, args.epochs):
-        # Training
-        model.train()
-        total_train_loss = 0
-        num_train_batches = 0
-        
-        for i, batch in enumerate(train_loader):
-            flux = batch['flux'].to(device)
-            wavelength = batch['wavelength'].to(device)
-            ivar = batch['ivar'].to(device)
-            valid_mask = batch['valid_mask'].to(device)
-            
-            optimizer.zero_grad()
-            
-            reconstruction = model(flux, wavelength)
-            
-            diff = (flux - reconstruction) ** 2
-            weighted_diff = diff * ivar
-            loss = (weighted_diff * valid_mask).sum() / (ivar.sum() + 1e-8)
-            
-            loss.backward()
-            optimizer.step()
-            
-            total_train_loss += loss.item()
-            num_train_batches += 1
-            
-        avg_train_loss = total_train_loss / num_train_batches
-        train_losses.append(avg_train_loss)
-        
-        # Validation
-        model.eval()
-        total_val_loss = 0
-        num_val_batches = 0
-        
-        with torch.no_grad():
-            for batch in val_loader:
-                flux = batch['flux'].to(device)
-                wavelength = batch['wavelength'].to(device)
-                ivar = batch['ivar'].to(device)
-                valid_mask = batch['valid_mask'].to(device)
-                
-                reconstruction = model(flux, wavelength)
-                
-                diff = (flux - reconstruction) ** 2
-                weighted_diff = diff * ivar
-                loss = (weighted_diff * valid_mask).sum() / (ivar.sum() + 1e-8)
-                
-                total_val_loss += loss.item()
-                num_val_batches += 1
-        
-        avg_val_loss = total_val_loss / num_val_batches
-        val_losses.append(avg_val_loss)
-        
-        print(f"Epoch {epoch}: Train Loss={avg_train_loss:.6f}, Val Loss={avg_val_loss:.6f}")
-        
-        # Early Stopping & Checkpointing
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            patience_counter = 0
-            best_model_path = os.path.join(args.save_dir, f"best_model_{run_id}.pt")
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': best_val_loss,
-            }, best_model_path)
-            print(f"Saved best model to {best_model_path}")
-        else:
-            patience_counter += 1
-            print(f"Validation loss did not improve. Patience: {patience_counter}/{args.patience}")
-            
-        if patience_counter >= args.patience:
-            print("Early stopping triggered.")
-            break
-            
-        # Save regular checkpoint
-        ckpt_path = os.path.join(args.save_dir, f"model_{run_id}_epoch_{epoch}.pt")
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': avg_train_loss,
-            'val_loss': avg_val_loss,
-        }, ckpt_path)
-
-    # Plot Loss
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label="Train Loss")
-    plt.plot(val_losses, label="Val Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.title("Training and Validation Loss")
-    plt.savefig(os.path.join(args.save_dir, f"loss_curve_{run_id}.png"))
-    plt.close()
-    print(f"Saved loss_curve_{run_id}.png")
-
-    # Evaluation and Plotting on Test Set
-    print("Generating diagnostic plots on Test Set...")
-    # Load best model
-    if os.path.exists(best_model_path):
-        checkpoint = torch.load(best_model_path)
+    # Load Checkpoint
+    if os.path.isfile(args.checkpoint):
+        print(f"Loading checkpoint: {args.checkpoint}")
+        checkpoint = torch.load(args.checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"Loaded best model from {best_model_path}")
+        print(f"Loaded model from epoch {checkpoint['epoch']}")
     else:
-        print("Best model not found, using current model.")
-        
+        print(f"Error: Checkpoint not found at {args.checkpoint}")
+        return
+
     model.eval()
     
     # 1. Reconstructions
-    # 1. Reconstructions
+    print("Generating reconstruction plots...")
     with torch.no_grad():
         sdss_plotted = 0
         desi_plotted = 0
@@ -264,7 +135,7 @@ def train():
                     plt.title(f"Reconstruction {obj_id} ({ds_name})")
                     plt.xlabel("Wavelength")
                     plt.ylabel("Normalized Flux")
-                    plt.savefig(os.path.join(args.save_dir, f"reconstruction_{run_id}_test_{total_plotted}_{ds_name}.png"))
+                    plt.savefig(os.path.join(args.save_dir, f"eval_reconstruction_{run_id}_{total_plotted}_{ds_name}.png"))
                     plt.close()
                     total_plotted += 1
                 
@@ -328,9 +199,9 @@ def train():
     plt.title(f"{title} of Spectral Embeddings (Test Set)")
     plt.xlabel("Dim 1")
     plt.ylabel("Dim 2")
-    plt.savefig(os.path.join(args.save_dir, f"embedding_projection_{run_id}.png"))
+    plt.savefig(os.path.join(args.save_dir, f"eval_embedding_projection_{run_id}.png"))
     plt.close()
-    print(f"Saved embedding_projection_{run_id}.png")
+    print(f"Saved eval_embedding_projection_{run_id}.png")
 
 if __name__ == "__main__":
-    train()
+    evaluate()
